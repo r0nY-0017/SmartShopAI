@@ -152,7 +152,6 @@ def get_history(user_id: str, db: Session) -> list:
 def save_message(user_id: str, role: str, content: str, db: Session, metadata: dict | None = None):
     history_item = ChatHistory(user_id=user_id, role=role, content=content)
     if metadata:
-        # ✅ correct field name matching the SQLAlchemy model
         history_item.metadata_json = json.dumps(metadata, ensure_ascii=False)
     db.add(history_item)
     db.commit()
@@ -237,6 +236,20 @@ def chat_ui():
     outline: none;
   }
 
+  /* NEW: Clear History button style */
+  .clear-btn {
+    margin-left: auto;
+    background: #dc3545;
+    color: white;
+    border: none;
+    border-radius: 20px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .clear-btn:hover { background: #c82333; }
+
   .messages {
     flex: 1;
     overflow-y: auto;
@@ -246,7 +259,6 @@ def chat_ui():
     gap: 10px;
   }
 
-  /* Each row pushes content left or right — never flex-direction:column */
   .msg-row {
     display: flex;
     width: 100%;
@@ -255,7 +267,6 @@ def chat_ui():
   .msg-row.user { justify-content: flex-end; }
   .msg-row.bot  { justify-content: flex-start; }
 
-  /* User bubble */
   .user-bubble {
     background: #dcf8c5;
     color: #111;
@@ -268,7 +279,6 @@ def chat_ui():
     word-wrap: break-word;
   }
 
-  /* Bot block: stacks text bubble + product cards vertically, left-aligned */
   .bot-block {
     display: flex;
     flex-direction: column;
@@ -277,7 +287,6 @@ def chat_ui():
     max-width: 85%;
   }
 
-  /* Bot text bubble — shrinks to content, never stretches full width */
   .bot-bubble {
     display: inline-block;
     background: #ffffff;
@@ -292,7 +301,6 @@ def chat_ui():
     max-width: 100%;
   }
 
-  /* Typing indicator */
   .typing-bubble {
     display: inline-flex;
     gap: 5px;
@@ -318,7 +326,6 @@ def chat_ui():
     30%           { transform: translateY(-5px); }
   }
 
-  /* Product cards in a horizontal wrap row */
   .products-row {
     display: flex;
     flex-direction: row;
@@ -418,7 +425,7 @@ def chat_ui():
   <div class="header">
     <div class="avatar">🛍️</div>
     <div class="header-info">
-      <h2>ShopBot</h2>
+      <h2>SmartShopAI</h2>
       <p>AI Shopping Assistant</p>
     </div>
   </div>
@@ -431,6 +438,8 @@ def chat_ui():
       <option value="charlie">Charlie</option>
       <option value="david" selected>David</option>
     </select>
+    <!-- NEW: Clear History button -->
+    <button id="clearHistoryBtn" class="clear-btn">🗑️ Clear History</button>
   </div>
 
   <div class="messages" id="messages"></div>
@@ -570,6 +579,23 @@ async function sendMessage() {
   }
 }
 
+// NEW: Clear history function
+async function clearHistory() {
+  const userId = document.getElementById('userIdSelect').value;
+  if (!confirm(`Are you sure you want to delete all chat history for ${userId}?`)) return;
+  try {
+    const response = await fetch(`/history/${userId}`, { method: 'DELETE' });
+    if (response.ok) {
+      loadHistory(userId); // reload history after deletion
+    } else {
+      alert('Failed to clear history.');
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Error clearing history.');
+  }
+}
+
 document.getElementById('userIdSelect').addEventListener('change', e => {
   loadHistory(e.target.value);
 });
@@ -577,6 +603,9 @@ document.getElementById('userIdSelect').addEventListener('change', e => {
 document.getElementById('userInput').addEventListener('keypress', e => {
   if (e.key === 'Enter') sendMessage();
 });
+
+// NEW: Attach clear button event
+document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
 
 loadHistory(document.getElementById('userIdSelect').value);
 </script>
@@ -600,6 +629,14 @@ class ChatResponse(BaseModel):
 @app.get("/history/{user_id}")
 def get_chat_history(user_id: str, db: Session = Depends(get_db)):
     return get_history(user_id, db)
+
+
+# NEW: Delete all history for a user
+@app.delete("/history/{user_id}")
+def delete_chat_history(user_id: str, db: Session = Depends(get_db)):
+    deleted = db.query(ChatHistory).filter(ChatHistory.user_id == user_id).delete()
+    db.commit()
+    return {"deleted": deleted}
 
 
 @app.post("/reply", response_model=ChatResponse)
