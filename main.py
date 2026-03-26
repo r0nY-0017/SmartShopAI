@@ -31,40 +31,68 @@ FIXED_GOODBYE = (
     "If you need anything else, I'm here to help. Take care! 😊"
 )
 
-SYSTEM_PROMPT = f"""You are a friendly shopping assistant chatbot for an e-commerce platform.
+SYSTEM_PROMPT = f"""You are a friendly and professional shopping assistant for an e-commerce platform.
 
-You have 2 tools:
-- search_products: when the customer asks about any product or category
-- get_product_details: when the customer wants details about a specific product (use product id from search)
+## Language & Tone
+- Detect and respond in the customer's language: Iraqi Arabic, English, Kurdish, or Bangla
+- When multiple languages are used, prioritize: Iraqi Arabic > English > Kurdish > Bangla
+- Maintain a natural, warm, and culturally respectful tone
 
-**General Approach:**
-- Before calling any tool, try to understand what the customer really wants.
-- If the request is vague (e.g., "I need a laptop", "show me shoes"), politely ask follow-up questions:
-  - "What kind of [product] are you looking for?"
-  - "Do you have a budget in mind?"
-  - "Any preferred brand or features?"
-- Only after you have enough details (at least the type and budget range) should you call `search_products` with appropriate filters.
+## Available Tools
+1. **search_products** - Search products by keyword/category with optional filters (price range, brand, ratings, etc.)
+2. **get_product_details** - Retrieve complete information for a specific product by ID
 
-**Phone Inquiries (example flow):**
-- If the customer says "I need a mobile", "I need a phone", etc., do **not** search immediately.
-- Ask: "What type of phone are you looking for – a smartphone or a basic phone?"
-- Then ask: "What's your budget range? (low / mid / high, or a specific amount)"
-- Only then search with:
-  - `category`: "smartphones" (or whatever type they said)
-  - `min_price` / `max_price` based on budget (low: <300, mid: 300-700, high: >700)
+## Interaction Guidelines
 
-**Other Product Categories:**
-- For laptops, shoes, watches, etc., follow the same principle:
-  - Ask for the category (if not already clear), budget, and any specific features.
-- Use the `category` filter when possible (e.g., "laptops", "mens-shoes") and price filters.
-
-**Rules:**
-1. Always respond in English.
-2. When showing products, use the tool results – never invent products.
-3. Keep your text reply short and friendly. The frontend will display product images, prices, and descriptions automatically from the tool response.
-4. If the customer wants to order or buy, politely provide the order link (included in the product data).
-5. If the customer says bye, thanks, or goodbye, reply with EXACTLY this message and nothing else:
+### Greetings vs. Farewells
+- **Greetings** (e.g., "hello", "hi", "hey", "good morning"): respond with a friendly welcome, **not** the goodbye message.
+- **Farewells** (e.g., "bye", "goodbye", "thanks", "thank you", "see you"): respond with EXACTLY this message and nothing else:
 {FIXED_GOODBYE}
+
+### Understanding Customer Needs
+- Ask clarifying questions for vague requests (e.g., "I need a laptop" → ask about type, budget, and features)
+- Gather key details before searching: category, budget range, and must-have features
+- Only call `search_products` once you have sufficient information
+
+### Phone/Mobile Inquiries (Example)
+- Don't search immediately for "I need a phone" requests
+- Ask: "Are you looking for a smartphone or a basic phone?"
+- Follow with: "What's your budget range?"
+- Then search with appropriate filters: `category`, `min_price`, `max_price`
+
+## Product Display
+
+### Text Response Rules (CRITICAL)
+- **NEVER include image URLs, links, product names, prices, descriptions, ratings, or any product details in your text**
+- Your text response must contain ONLY:
+  1. **One opening sentence** introducing the results (e.g., "Here are some smartphone options for you:")
+  2. **One closing sentence** (optional) offering further assistance (e.g., "If you need more information or want to explore further, just let me know!")
+- **No markdown lists, no links, no product information** - let the frontend handle everything
+
+### How It Works
+1. You call `search_products` with appropriate filters
+2. The frontend automatically displays product cards below your text
+3. Each card contains: image, name, price, description, rating, and order link
+4. Your only job is to introduce the results and offer help
+
+### Search Parameters
+- Use `limit` parameter to control results (default: 10; use `limit=1` for single suggestions)
+- Use `sort_by` parameter for sorting: "rating", "price_asc", "price_desc"
+- Use `category`, `min_price`, `max_price` filters when applicable
+
+## Critical Rules
+1. Always respond in the customer's detected language
+2. Use tools exclusively - never fabricate products
+3. Keep text responses to 2 sentences maximum (except for farewells)
+4. Avoid all markdown formatting for products
+5. For farewells, use the exact goodbye message provided above.
+6. For greetings, respond naturally without any product listings.
+
+## Example Interaction
+**Customer:** "I need a smartphone around 300-500 with a good camera"  
+**You:** (calls search_products with appropriate filters)  
+**Your text reply:** "Here are some great smartphone options for you: If you'd like more details or have other preferences, let me know!"  
+**Result:** Product cards appear below with images, prices, and order links
 """
 
 TOOL_DEFINITIONS = [
@@ -81,7 +109,9 @@ TOOL_DEFINITIONS = [
                     "max_price": {"type": "number", "description": "Maximum price in USD e.g. 50 means under 50 dollars"},
                     "min_price": {"type": "number", "description": "Minimum price in USD"},
                     "min_rating": {"type": "number", "description": "Minimum rating out of 5 e.g. 4.0 for top rated"},
-                    "in_stock": {"type": "boolean", "description": "If true, return only in-stock products"}
+                    "in_stock": {"type": "boolean", "description": "If true, return only in-stock products"},
+                    "limit": {"type": "integer", "description": "Maximum number of products to return (default 4)"},
+                    "sort_by": {"type": "string", "description": "Sort order: 'rating', 'price_asc', 'price_desc' (default 'rating')"}
                 },
                 "required": ["query"]
             }
@@ -113,6 +143,8 @@ def run_tool(tool_name: str, args: dict) -> str:
             min_price=args.get("min_price"),
             min_rating=args.get("min_rating"),
             in_stock=args.get("in_stock"),
+            limit=args.get("limit", 4),
+            sort_by=args.get("sort_by", "rating")
         )
     elif tool_name == "get_product_details":
         result = get_product_details(args["product_id"])
@@ -169,7 +201,7 @@ def chat_ui():
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
-<title>ShopBot</title>
+<title>SmartShopAI</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -236,7 +268,6 @@ def chat_ui():
     outline: none;
   }
 
-  /* NEW: Clear History button style */
   .clear-btn {
     margin-left: auto;
     background: #dc3545;
@@ -326,44 +357,36 @@ def chat_ui():
     30%           { transform: translateY(-5px); }
   }
 
-  .products-row {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
+  /* Individual product card (full width) */
   .product-card {
     background: #ffffff;
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-    width: 180px;
-    flex-shrink: 0;
+    width: 100%;
+    max-width: 300px;
     display: flex;
     flex-direction: column;
   }
 
   .product-card img {
     width: 100%;
-    height: 160px;
+    height: 200px;
     object-fit: cover;
     display: block;
     background: #f0f0f0;
   }
 
   .card-info {
-    padding: 10px;
+    padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    flex: 1;
+    gap: 6px;
   }
 
-  .card-name  { font-size: 13px; font-weight: 600; color: #111; line-height: 1.3; }
-  .card-price { font-size: 15px; font-weight: 700; color: #075e54; }
-  .card-desc  { font-size: 12px; color: #666; line-height: 1.4; flex: 1; margin-top: 2px; }
-
+  .card-name  { font-size: 14px; font-weight: 600; color: #111; line-height: 1.3; }
+  .card-price { font-size: 16px; font-weight: 700; color: #075e54; }
+  .card-desc  { font-size: 12px; color: #666; line-height: 1.4; }
   .card-btn {
     margin-top: 8px;
     display: inline-block;
@@ -438,7 +461,6 @@ def chat_ui():
       <option value="charlie">Charlie</option>
       <option value="david" selected>David</option>
     </select>
-    <!-- NEW: Clear History button -->
     <button id="clearHistoryBtn" class="clear-btn">🗑️ Clear History</button>
   </div>
 
@@ -499,22 +521,23 @@ function addMessage(role, content, products, extra) {
   if (role === 'user') {
     if (!content || !content.trim()) return;
     row.innerHTML = `<div class="user-bubble">${esc(content).replace(/\\n/g,'<br>')}</div>`;
+    messagesDiv.appendChild(row);
   } else {
-    const hasText     = content && content.trim();
-    const hasProducts = products.length > 0;
-    if (!hasText && !hasProducts) return;
-
-    let inner = '';
-    if (hasText) {
-      inner += `<div class="bot-bubble">${esc(content).replace(/\\n/g,'<br>')}</div>`;
+    // For bot: first add text message if any
+    if (content && content.trim()) {
+      const textRow = document.createElement('div');
+      textRow.className = 'msg-row bot';
+      textRow.innerHTML = `<div class="bot-block"><div class="bot-bubble">${esc(content).replace(/\\n/g,'<br>')}</div></div>`;
+      messagesDiv.appendChild(textRow);
     }
-    if (hasProducts) {
-      inner += `<div class="products-row">${products.map(buildProductCard).join('')}</div>`;
+    // Then add each product as a separate message row
+    for (let p of products) {
+      const productRow = document.createElement('div');
+      productRow.className = 'msg-row bot';
+      productRow.innerHTML = `<div class="bot-block">${buildProductCard(p)}</div>`;
+      messagesDiv.appendChild(productRow);
     }
-    row.innerHTML = `<div class="bot-block">${inner}</div>`;
   }
-
-  messagesDiv.appendChild(row);
   scrollToBottom();
 }
 
@@ -579,14 +602,13 @@ async function sendMessage() {
   }
 }
 
-// NEW: Clear history function
 async function clearHistory() {
   const userId = document.getElementById('userIdSelect').value;
   if (!confirm(`Are you sure you want to delete all chat history for ${userId}?`)) return;
   try {
     const response = await fetch(`/history/${userId}`, { method: 'DELETE' });
     if (response.ok) {
-      loadHistory(userId); // reload history after deletion
+      loadHistory(userId);
     } else {
       alert('Failed to clear history.');
     }
@@ -604,7 +626,6 @@ document.getElementById('userInput').addEventListener('keypress', e => {
   if (e.key === 'Enter') sendMessage();
 });
 
-// NEW: Attach clear button event
 document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
 
 loadHistory(document.getElementById('userIdSelect').value);
@@ -631,7 +652,6 @@ def get_chat_history(user_id: str, db: Session = Depends(get_db)):
     return get_history(user_id, db)
 
 
-# NEW: Delete all history for a user
 @app.delete("/history/{user_id}")
 def delete_chat_history(user_id: str, db: Session = Depends(get_db)):
     deleted = db.query(ChatHistory).filter(ChatHistory.user_id == user_id).delete()
@@ -641,16 +661,18 @@ def delete_chat_history(user_id: str, db: Session = Depends(get_db)):
 
 @app.post("/reply", response_model=ChatResponse)
 def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
-    existing = db.query(ChatHistory).filter(ChatHistory.user_id == data.user_id).first()
-    if not existing:
-        save_message(data.user_id, "assistant", FIXED_WELCOME, db)
-        return ChatResponse(reply=FIXED_WELCOME)
-
+    # Removed automatic welcome – let the conversation start naturally.
     history = get_history(data.user_id, db)
-    history.append({"role": "user", "content": data.message})
-    save_message(data.user_id, "user", data.message, db)
+    # Add the user message to history (for saving later)
+    # We'll save after we generate the reply, but we need the user message in context.
+    # We'll create a new list with the user message appended for the AI.
+    messages_for_ai = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in history:
+        messages_for_ai.append({"role": msg["role"], "content": msg["content"]})
+    messages_for_ai.append({"role": "user", "content": data.message})
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+    # Save the user message now (so it appears in history even if something fails)
+    save_message(data.user_id, "user", data.message, db)
 
     image_url = None
     order_link = None
@@ -659,7 +681,7 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
     while True:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=messages,
+            messages=messages_for_ai,
             tools=TOOL_DEFINITIONS,
             tool_choice="auto",
             temperature=0.7,
@@ -669,7 +691,8 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
         ai_message = response.choices[0].message
 
         if ai_message.tool_calls:
-            messages.append(ai_message)
+            # Append the assistant message (with tool calls) to the conversation
+            messages_for_ai.append(ai_message)
 
             for tool_call in ai_message.tool_calls:
                 tool_name = tool_call.function.name
@@ -701,7 +724,7 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
                             "order_link":  tool_result.get("order_link", ""),
                         }]
 
-                messages.append({
+                messages_for_ai.append({
                     "role":         "tool",
                     "tool_call_id": tool_call.id,
                     "content":      tool_result_str,
