@@ -18,7 +18,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-MAX_HISTORY = 20
+MAX_HISTORY = 200
 
 FIXED_WELCOME = (
     "👋 Hello! Welcome to ShopBot, your AI shopping assistant. "
