@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 
 from database import engine, get_db, Base
-from models import ChatHistory
+from models import ChatHistory, Order
 from tools import search_products, get_product_details
 
 load_dotenv()
@@ -31,69 +31,15 @@ FIXED_GOODBYE = (
     "If you need anything else, I'm here to help. Take care! 😊"
 )
 
-SYSTEM_PROMPT = f"""You are a friendly and professional shopping assistant for an e-commerce platform.
+# Load system prompt from file
+def load_system_prompt():
+    prompt_path = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        template = f.read()
+    # Format with FIXED_GOODBYE (and maybe FIXED_WELCOME if used)
+    return template.format(FIXED_GOODBYE=FIXED_GOODBYE)
 
-## Language & Tone
-- Detect and respond in the customer's language: Iraqi Arabic, English, Kurdish, or Bangla
-- When multiple languages are used, prioritize: Iraqi Arabic > English > Kurdish > Bangla
-- Maintain a natural, warm, and culturally respectful tone
-
-## Available Tools
-1. **search_products** - Search products by keyword/category with optional filters (price range, brand, ratings, etc.)
-2. **get_product_details** - Retrieve complete information for a specific product by ID
-
-## Interaction Guidelines
-
-### Greetings vs. Farewells
-- **Greetings** (e.g., "hello", "hi", "hey", "good morning"): respond with a friendly welcome, **not** the goodbye message.
-- **Farewells** (e.g., "bye", "goodbye", "thanks", "thank you", "see you"): respond with EXACTLY this message and nothing else:
-{FIXED_GOODBYE}
-
-### Understanding Customer Needs
-- Ask clarifying questions for vague requests (e.g., "I need a laptop" → ask about type, budget, and features)
-- Gather key details before searching: category, budget range, and must-have features
-- Only call `search_products` once you have sufficient information
-
-### Phone/Mobile Inquiries (Example)
-- Don't search immediately for "I need a phone" requests
-- Ask: "Are you looking for a smartphone or a basic phone?"
-- Follow with: "What's your budget range?"
-- Then search with appropriate filters: `category`, `min_price`, `max_price`
-
-## Product Display
-
-### Text Response Rules (CRITICAL)
-- **NEVER include image URLs, links, product names, prices, descriptions, ratings, or any product details in your text**
-- Your text response must contain ONLY:
-  1. **One opening sentence** introducing the results (e.g., "Here are some smartphone options for you:")
-  2. **One closing sentence** (optional) offering further assistance (e.g., "If you need more information or want to explore further, just let me know!")
-- **No markdown lists, no links, no product information** - let the frontend handle everything
-
-### How It Works
-1. You call `search_products` with appropriate filters
-2. The frontend automatically displays product cards below your text
-3. Each card contains: image, name, price, description, rating, and order link
-4. Your only job is to introduce the results and offer help
-
-### Search Parameters
-- Use `limit` parameter to control results (default: 10; use `limit=1` for single suggestions)
-- Use `sort_by` parameter for sorting: "rating", "price_asc", "price_desc"
-- Use `category`, `min_price`, `max_price` filters when applicable
-
-## Critical Rules
-1. Always respond in the customer's detected language
-2. Use tools exclusively - never fabricate products
-3. Keep text responses to 2 sentences maximum (except for farewells)
-4. Avoid all markdown formatting for products
-5. For farewells, use the exact goodbye message provided above.
-6. For greetings, respond naturally without any product listings.
-
-## Example Interaction
-**Customer:** "I need a smartphone around 300-500 with a good camera"  
-**You:** (calls search_products with appropriate filters)  
-**Your text reply:** "Here are some great smartphone options for you: If you'd like more details or have other preferences, let me know!"  
-**Result:** Product cards appear below with images, prices, and order links
-"""
+SYSTEM_PROMPT = load_system_prompt()
 
 TOOL_DEFINITIONS = [
     {
@@ -130,7 +76,29 @@ TOOL_DEFINITIONS = [
                 "required": ["product_id"]
             }
         }
+    },
+
+    {
+    "type": "function",
+    "function": {
+        "name": "place_order",
+        "description": "Place an order for a product. Call this when the customer wants to buy a product.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "Product ID from search results"},
+                "product_name": {"type": "string", "description": "Name of the product"},
+                "quantity": {"type": "integer", "description": "Number of items to order (default 1)"},
+                "customer_name": {"type": "string", "description": "Full name of the customer"},
+                "customer_email": {"type": "string", "description": "Email address of the customer"},
+                "address": {"type": "string", "description": "Shipping address"},
+                "phone": {"type": "string", "description": "Phone number for contact"},
+                "notes": {"type": "string", "description": "Any special instructions"}
+            },
+            "required": ["product_id", "product_name", "customer_name", "customer_email", "address"]
+        }
     }
+}
 ]
 
 
@@ -188,6 +156,22 @@ def save_message(user_id: str, role: str, content: str, db: Session, metadata: d
     db.add(history_item)
     db.commit()
 
+def save_order(user_id: str, order_args: dict, db: Session) -> dict:
+    order = Order(
+        user_id=user_id,
+        customer_name=order_args["customer_name"],
+        customer_email=order_args["customer_email"],
+        product_id=order_args["product_id"],
+        product_name=order_args["product_name"],
+        quantity=order_args.get("quantity", 1),
+        address=order_args["address"],
+        phone=order_args.get("phone", ""),
+        notes=order_args.get("notes", "")
+    )
+    db.add(order)
+    db.commit()
+    return {"success": True, "message": "Your order has been placed! Thank you for shopping with us."}
+
 
 # ============================================================
 # Chat UI
@@ -195,444 +179,7 @@ def save_message(user_id: str, role: str, content: str, db: Session, metadata: d
 
 @app.get("/", response_class=HTMLResponse)
 def chat_ui():
-    return """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
-<title>SmartShopAI</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-    background: #0b141a;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-    padding: 20px;
-  }
-
-  .chat-container {
-    width: 100%;
-    max-width: 800px;
-    height: 90vh;
-    background: #e5ddd5;
-    border-radius: 12px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-  }
-
-  .header {
-    background: #075e54;
-    color: white;
-    padding: 12px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-shrink: 0;
-  }
-
-  .avatar {
-    width: 40px; height: 40px;
-    background: #128c7e;
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 20px;
-  }
-
-  .header-info h2 { font-size: 18px; font-weight: 500; margin: 0; }
-  .header-info p  { font-size: 12px; opacity: 0.8; margin: 0; }
-
-  .user-selector {
-    background: #f0f2f5;
-    padding: 10px 16px;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-shrink: 0;
-  }
-
-  .user-selector label { font-size: 14px; font-weight: 500; color: #075e54; }
-  .user-selector select {
-    padding: 6px 12px;
-    border-radius: 20px;
-    border: 1px solid #ccc;
-    background: white;
-    font-size: 14px;
-    outline: none;
-  }
-
-  .clear-btn {
-    margin-left: auto;
-    background: #dc3545;
-    color: white;
-    border: none;
-    border-radius: 20px;
-    padding: 6px 12px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .clear-btn:hover { background: #c82333; }
-
-  .messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .msg-row {
-    display: flex;
-    width: 100%;
-    animation: fadeIn 0.2s ease;
-  }
-  .msg-row.user { justify-content: flex-end; }
-  .msg-row.bot  { justify-content: flex-start; }
-
-  .user-bubble {
-    background: #dcf8c5;
-    color: #111;
-    padding: 8px 13px;
-    border-radius: 16px;
-    border-bottom-right-radius: 3px;
-    font-size: 14px;
-    line-height: 1.5;
-    max-width: 70%;
-    word-wrap: break-word;
-  }
-
-  .bot-block {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-    max-width: 85%;
-  }
-
-  .bot-bubble {
-    display: inline-block;
-    background: #ffffff;
-    color: #111;
-    padding: 8px 13px;
-    border-radius: 16px;
-    border-bottom-left-radius: 3px;
-    font-size: 14px;
-    line-height: 1.5;
-    word-wrap: break-word;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
-    max-width: 100%;
-  }
-
-  .typing-bubble {
-    display: inline-flex;
-    gap: 5px;
-    align-items: center;
-    background: #ffffff;
-    padding: 10px 14px;
-    border-radius: 16px;
-    border-bottom-left-radius: 3px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
-  }
-
-  .dot {
-    width: 7px; height: 7px;
-    background: #aaa;
-    border-radius: 50%;
-    animation: bounce 1.3s infinite;
-  }
-  .dot:nth-child(2) { animation-delay: 0.18s; }
-  .dot:nth-child(3) { animation-delay: 0.36s; }
-
-  @keyframes bounce {
-    0%, 60%, 100% { transform: translateY(0); }
-    30%           { transform: translateY(-5px); }
-  }
-
-  /* Individual product card (full width) */
-  .product-card {
-    background: #ffffff;
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-    width: 100%;
-    max-width: 300px;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .product-card img {
-    width: 100%;
-    height: 200px;
-    object-fit: cover;
-    display: block;
-    background: #f0f0f0;
-  }
-
-  .card-info {
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .card-name  { font-size: 14px; font-weight: 600; color: #111; line-height: 1.3; }
-  .card-price { font-size: 16px; font-weight: 700; color: #075e54; }
-  .card-desc  { font-size: 12px; color: #666; line-height: 1.4; }
-  .card-btn {
-    margin-top: 8px;
-    display: inline-block;
-    background: #075e54;
-    color: #fff;
-    border: none;
-    padding: 7px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.2s;
-    align-self: flex-start;
-  }
-  .card-btn:hover { background: #128c7e; }
-
-  .input-area {
-    background: #f0f2f5;
-    padding: 12px 16px;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    border-top: 1px solid #ddd;
-    flex-shrink: 0;
-  }
-
-  .input-area input {
-    flex: 1;
-    padding: 10px 16px;
-    border: none;
-    border-radius: 24px;
-    background: white;
-    font-size: 14px;
-    outline: none;
-  }
-
-  .send-btn {
-    background: #075e54;
-    border: none;
-    width: 42px; height: 42px;
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer;
-    transition: background 0.2s;
-    flex-shrink: 0;
-  }
-  .send-btn:hover { background: #128c7e; }
-  .send-btn svg { width: 20px; height: 20px; fill: white; }
-
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-</style>
-</head>
-<body>
-<div class="chat-container">
-
-  <div class="header">
-    <div class="avatar">🛍️</div>
-    <div class="header-info">
-      <h2>SmartShopAI</h2>
-      <p>AI Shopping Assistant</p>
-    </div>
-  </div>
-
-  <div class="user-selector">
-    <label>👤 User:</label>
-    <select id="userIdSelect">
-      <option value="alice">Alice</option>
-      <option value="bob">Bob</option>
-      <option value="charlie">Charlie</option>
-      <option value="david" selected>David</option>
-    </select>
-    <button id="clearHistoryBtn" class="clear-btn">🗑️ Clear History</button>
-  </div>
-
-  <div class="messages" id="messages"></div>
-
-  <div class="input-area">
-    <input type="text" id="userInput" placeholder="Type a message" autofocus />
-    <button class="send-btn" onclick="sendMessage()">
-      <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
-    </button>
-  </div>
-
-</div>
-
-<script>
-const messagesDiv = document.getElementById('messages');
-
-function scrollToBottom() {
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
-}
-
-function esc(text) {
-  const d = document.createElement('div');
-  d.textContent = String(text || '');
-  return d.innerHTML;
-}
-
-function buildProductCard(p) {
-  return `
-    <div class="product-card">
-      <img src="${esc(p.image_url)}" alt="${esc(p.name)}" onerror="this.style.display='none'" />
-      <div class="card-info">
-        <div class="card-name">${esc(p.name || 'Product')}</div>
-        <div class="card-price">${esc(p.price || '')}</div>
-        <div class="card-desc">${esc(p.description || '')}</div>
-        ${p.order_link ? `<button class="card-btn" onclick="window.open('${esc(p.order_link)}','_blank')">🛒 Order Now</button>` : ''}
-      </div>
-    </div>`;
-}
-
-function addMessage(role, content, products, extra) {
-  products = Array.isArray(products) ? products : [];
-  extra    = extra || {};
-
-  if (products.length === 0 && extra.image_url) {
-    products = [{
-      name:        extra.name        || '',
-      price:       extra.price       || '',
-      description: extra.description || '',
-      image_url:   extra.image_url,
-      order_link:  extra.order_link  || '',
-    }];
-  }
-
-  const row = document.createElement('div');
-  row.className = `msg-row ${role}`;
-
-  if (role === 'user') {
-    if (!content || !content.trim()) return;
-    row.innerHTML = `<div class="user-bubble">${esc(content).replace(/\\n/g,'<br>')}</div>`;
-    messagesDiv.appendChild(row);
-  } else {
-    // For bot: first add text message if any
-    if (content && content.trim()) {
-      const textRow = document.createElement('div');
-      textRow.className = 'msg-row bot';
-      textRow.innerHTML = `<div class="bot-block"><div class="bot-bubble">${esc(content).replace(/\\n/g,'<br>')}</div></div>`;
-      messagesDiv.appendChild(textRow);
-    }
-    // Then add each product as a separate message row
-    for (let p of products) {
-      const productRow = document.createElement('div');
-      productRow.className = 'msg-row bot';
-      productRow.innerHTML = `<div class="bot-block">${buildProductCard(p)}</div>`;
-      messagesDiv.appendChild(productRow);
-    }
-  }
-  scrollToBottom();
-}
-
-function showTyping() {
-  const row = document.createElement('div');
-  row.className = 'msg-row bot';
-  row.id = 'typing-row';
-  row.innerHTML = `<div class="bot-block"><div class="typing-bubble"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>`;
-  messagesDiv.appendChild(row);
-  scrollToBottom();
-}
-
-function hideTyping() {
-  const el = document.getElementById('typing-row');
-  if (el) el.remove();
-}
-
-async function loadHistory(userId) {
-  messagesDiv.innerHTML = '';
-  showTyping();
-  try {
-    const res = await fetch(`/history/${userId}`);
-    if (!res.ok) throw new Error('History fetch failed');
-    const history = await res.json();
-    hideTyping();
-    history.forEach(m => addMessage(m.role, m.content, m.products, {
-      image_url:  m.image_url,
-      order_link: m.order_link,
-    }));
-  } catch (err) {
-    hideTyping();
-    addMessage('bot', '👋 Hello! How can I help you today?');
-  }
-}
-
-async function sendMessage() {
-  const input  = document.getElementById('userInput');
-  const userId = document.getElementById('userIdSelect').value;
-  const text   = input.value.trim();
-  if (!text) return;
-  input.value = '';
-
-  addMessage('user', text);
-  showTyping();
-
-  try {
-    const res  = await fetch('/reply', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ user_id: userId, message: text }),
-    });
-    if (!res.ok) throw new Error('Reply failed');
-    const data = await res.json();
-    hideTyping();
-    addMessage('bot', data.reply, data.products, {
-      image_url:  data.image_url,
-      order_link: data.order_link,
-    });
-  } catch (err) {
-    hideTyping();
-    addMessage('bot', '❌ Sorry, something went wrong. Please try again.');
-  }
-}
-
-async function clearHistory() {
-  const userId = document.getElementById('userIdSelect').value;
-  if (!confirm(`Are you sure you want to delete all chat history for ${userId}?`)) return;
-  try {
-    const response = await fetch(`/history/${userId}`, { method: 'DELETE' });
-    if (response.ok) {
-      loadHistory(userId);
-    } else {
-      alert('Failed to clear history.');
-    }
-  } catch (err) {
-    console.error(err);
-    alert('Error clearing history.');
-  }
-}
-
-document.getElementById('userIdSelect').addEventListener('change', e => {
-  loadHistory(e.target.value);
-});
-
-document.getElementById('userInput').addEventListener('keypress', e => {
-  if (e.key === 'Enter') sendMessage();
-});
-
-document.getElementById('clearHistoryBtn').addEventListener('click', clearHistory);
-
-loadHistory(document.getElementById('userIdSelect').value);
-</script>
-</body>
-</html>
-"""
+    return HTMLResponse(content=open("static/index.html", "r", encoding="utf-8").read(), status_code=200)
 
 # API Endpoints
 class ChatRequest(BaseModel):
@@ -691,15 +238,22 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
         ai_message = response.choices[0].message
 
         if ai_message.tool_calls:
-            # Append the assistant message (with tool calls) to the conversation
-            messages_for_ai.append(ai_message)
-
+            messages_for_ai.append(ai_message)   # append the assistant message with tool calls
             for tool_call in ai_message.tool_calls:
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments)
-                tool_result_str = run_tool(tool_name, tool_args)
+
+                if tool_name == "place_order":
+                    # Save order directly using our function
+                    result = save_order(data.user_id, tool_args, db)
+                    tool_result_str = json.dumps(result, ensure_ascii=False)
+                else:
+                    # For search_products and get_product_details
+                    tool_result_str = run_tool(tool_name, tool_args)
+
                 tool_result = json.loads(tool_result_str)
 
+                # Process products from search_products (as before)
                 if tool_result.get("found"):
                     if "products" in tool_result:
                         for p in tool_result["products"]:
@@ -708,28 +262,25 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
                                 "price":       p.get("price", ""),
                                 "description": p.get("description", ""),
                                 "image_url":   p.get("image_url", ""),
-                                "order_link":  p.get("order_link", ""),
+                                # No order_link
                             })
                         if products:
-                            image_url  = products[0]["image_url"]
-                            order_link = products[0]["order_link"]
+                            image_url = products[0]["image_url"]
                     elif "image_url" in tool_result:
-                        image_url  = tool_result["image_url"]
-                        order_link = tool_result.get("order_link")
-                        products   = [{
+                        image_url = tool_result["image_url"]
+                        products = [{
                             "name":        tool_result.get("name", ""),
                             "price":       tool_result.get("price", ""),
                             "description": tool_result.get("description", ""),
                             "image_url":   tool_result["image_url"],
-                            "order_link":  tool_result.get("order_link", ""),
                         }]
 
                 messages_for_ai.append({
-                    "role":         "tool",
+                    "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content":      tool_result_str,
+                    "content": tool_result_str,
                 })
-            continue
+            continue   # loop again to get the final answer after tools
 
         reply_text = ai_message.content
         break
@@ -749,3 +300,33 @@ def generate_reply(data: ChatRequest, db: Session = Depends(get_db)):
         order_link=order_link,
         products=products if products else None,
     )
+
+@app.get("/conversations")
+def get_conversations(db: Session = Depends(get_db)):
+    from sqlalchemy import func, and_
+    # Get first user message for each user_id
+    subq = db.query(
+        ChatHistory.user_id,
+        func.min(ChatHistory.created_at).label('first_time')
+    ).filter(ChatHistory.role == 'user').group_by(ChatHistory.user_id).subquery()
+    first_msgs = db.query(ChatHistory).join(
+        subq,
+        and_(ChatHistory.user_id == subq.c.user_id, ChatHistory.created_at == subq.c.first_time)
+    ).all()
+    
+    # Get latest timestamp per user_id
+    latest_times = db.query(
+        ChatHistory.user_id,
+        func.max(ChatHistory.created_at).label('last_time')
+    ).group_by(ChatHistory.user_id).all()
+    time_map = {t.user_id: t.last_time for t in latest_times}
+    
+    conversations = []
+    for msg in first_msgs:
+        conversations.append({
+            "user_id": msg.user_id,
+            "title": msg.content[:50],
+            "last_updated": time_map.get(msg.user_id, msg.created_at).isoformat()
+        })
+    conversations.sort(key=lambda x: x['last_updated'], reverse=True)
+    return conversations
