@@ -279,7 +279,7 @@ This project is open-source and available under the MIT License. See the `LICENS
 
 Have questions or suggestions? Feel free to open an issue or submit a pull request!
 
-**GitHub:** [r0nY-0017/SmartShopAI](https://github.com/r0nY-0017)
+**GitHub:** [r0nY-0017/SmartShopAI](https://github.com/r0nY-0017/SmartShopAI)
 
 **Email:** [hasan15-5976@diu.edu.bd](hasan15-5976@diu.edu.bd)
 
@@ -298,4 +298,4 @@ Have questions or suggestions? Feel free to open an issue or submit a pull reque
 
 **Happy Shopping! 🎉**
 
-*Made with ❤️ by the [me](https://github.com/r0nY-0017/SmartShopAI)
+*Made with ❤️ by the [me](https://github.com/r0nY-0017)
